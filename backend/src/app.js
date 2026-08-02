@@ -16,6 +16,14 @@ app.use(express.json());
 const authRoutes = require('./routes/auth.routes');
 app.use('/auth', authRoutes);
 
+const addressesRoutes = require('./routes/addresses.routes');
+app.use('/addresses', addressesRoutes);
+
+const ordersRoutes = require('./routes/orders.routes');
+app.use('/orders', ordersRoutes);
+
+const agentsRoutes = require('./routes/agents.routes');
+app.use('/agents', agentsRoutes);
 
 app.get('/health', (req, res) => {
   res.json({ status: 'ok', timestamp: new Date().toISOString() });

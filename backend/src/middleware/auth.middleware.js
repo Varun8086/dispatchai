@@ -28,3 +28,4 @@ function authorize(...allowedRoles) {
 }
 
 module.exports = { authenticate, authorize };
+
