@@ -77,6 +77,26 @@ async function initSocket(httpServer) {
             }
         });
 
+        socket.on('send-message', async ({ orderId, content }) => {
+            try {
+                if (!content || !content.trim()) return;
+
+                const result = await pool.query(
+                    `INSERT INTO messages (order_id, sender_id, content)
+       VALUES ($1, $2, $3)
+       RETURNING id, order_id, sender_id, content, created_at`,
+                    [orderId, socket.user.userId, content.trim()]
+                );
+
+                const message = result.rows[0];
+
+                // broadcast to EVERYONE in the room, including sender (so their own UI updates too)
+                io.to(`order:${orderId}`).emit('new-message', message);
+            } catch (err) {
+                console.error('Failed to send message:', err.message);
+            }
+        });
+
         socket.on('disconnect', () => {
             console.log(`Socket disconnected: user ${socket.user.userId}`);
         });
