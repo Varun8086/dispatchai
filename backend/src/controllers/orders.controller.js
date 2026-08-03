@@ -1,4 +1,5 @@
 const pool = require('../db/pool');
+const { publishEvent } = require('../kafka/producer');
 
 async function createOrder(req, res, next) {
   try {
@@ -25,6 +26,13 @@ async function createOrder(req, res, next) {
        RETURNING id, customer_id, pickup_address_id, dropoff_address_id, status, fare_amount, created_at`,
       [customerId, pickup_address_id, dropoff_address_id, fare_amount || null]
     );
+
+    await publishEvent('order.events', {
+      type: 'order.created',
+      orderId: result.rows[0].id,
+      customerId: customerId,
+      timestamp: new Date().toISOString(),
+    });
 
     res.status(201).json({ order: result.rows[0] });
   } catch (err) {
@@ -106,6 +114,13 @@ async function assignAgent(req, res, next) {
       [agent_id, id]
     );
 
+    await publishEvent('order.events', {
+      type: 'order.assigned',
+      orderId: result.rows[0].id,
+      agentId: agent_id,
+      timestamp: new Date().toISOString(),
+    });
+
     if (result.rows.length === 0) {
       return res.status(409).json({ error: 'Order not found or not in a pending state' });
     }
@@ -157,6 +172,13 @@ async function updateOrderStatus(req, res, next) {
       `UPDATE orders SET status = $1, updated_at = NOW() WHERE id = $2 RETURNING *`,
       [newStatus, id]
     );
+
+    await publishEvent('order.events', {
+      type: 'order.status_changed',
+      orderId: result.rows[0].id,
+      newStatus: newStatus,
+      timestamp: new Date().toISOString(),
+    });
 
     res.json({ order: result.rows[0] });
   } catch (err) {
