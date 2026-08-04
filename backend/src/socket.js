@@ -3,6 +3,7 @@ const { createClient } = require('redis');
 const { createAdapter } = require('@socket.io/redis-adapter');
 const jwt = require('jsonwebtoken');
 const pool = require('./db/pool');
+const { publishEvent } = require('./kafka/producer');
 
 let io;
 
@@ -41,31 +42,19 @@ async function initSocket(httpServer) {
             console.log(`User ${socket.user.userId} joined room order:${orderId}`);
         });
 
-        socket.on('leave-order', (orderId) => {
-            socket.leave(`order:${orderId}`);
-        });
-
         socket.on('agent-location-update', async ({ orderId, latitude, longitude }) => {
             try {
-                // persist to the agent's own record
-                await pool.query(
-                    `UPDATE agents
-       SET current_location = ST_SetSRID(ST_MakePoint($1, $2), 4326)::geography,
-           last_location_update = NOW()
-       WHERE user_id = $3`,
-                    [longitude, latitude, socket.user.userId]
-                );
+                // publish to Kafka instead of writing directly to Postgres
+                await publishEvent('location.updates', {
+                    type: 'agent.location_update',
+                    userId: socket.user.userId,
+                    orderId,
+                    latitude,
+                    longitude,
+                    timestamp: new Date().toISOString(),
+                });
 
-                // also persist to this specific order's current_location (order-in-progress snapshot)
-                await pool.query(
-                    `UPDATE orders
-       SET current_location = ST_SetSRID(ST_MakePoint($1, $2), 4326)::geography,
-           updated_at = NOW()
-       WHERE id = $3`,
-                    [longitude, latitude, orderId]
-                );
-
-                // broadcast to everyone else watching this order
+                // still broadcast live to the room immediately — the socket doesn't need to wait for Kafka's consumer
                 socket.to(`order:${orderId}`).emit('location-update', {
                     orderId,
                     latitude,
@@ -73,7 +62,7 @@ async function initSocket(httpServer) {
                     timestamp: new Date().toISOString(),
                 });
             } catch (err) {
-                console.error('Failed to persist location update:', err.message);
+                console.error('Failed to publish location update:', err.message);
             }
         });
 
