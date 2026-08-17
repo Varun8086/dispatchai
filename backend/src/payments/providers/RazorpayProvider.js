@@ -36,6 +36,60 @@ class RazorpayProvider extends PaymentProvider {
     const isValid = generatedSignature === signature;
     return { verified: isValid };
   }
+
+  async refundPayment({ providerPaymentId, amount }) {
+    const refund = await this.client.payments.refund(providerPaymentId, {
+      amount: Math.round(amount * 100), // paise, same unit conversion rule as createPayment
+    });
+
+    return {
+      provider: 'razorpay',
+      refundId: refund.id,
+      status: refund.status,
+      raw: refund,
+    };
+  }
+
+  async createLinkedAccount({ name, email, phone, ifscCode, accountNumber, businessName }) {
+    const account = await this.client.accounts.create({
+      email,
+      phone,
+      type: 'route',
+      reference_id: `agent_${email}`,
+      legal_business_name: businessName || name,
+      business_type: 'individual',
+      contact_name: name,
+      profile: {
+        category: 'transport',
+        subcategory: 'logistics',
+        addresses: {
+          registered: {
+            street1: 'NA', street2: 'NA', city: 'NA', state: 'NA', postal_code: '000000', country: 'IN',
+          },
+        },
+      },
+      legal_info: {
+        pan: 'AAACL1234C', // placeholder for test mode
+      },
+    });
+
+    return { linkedAccountId: account.id, raw: account };
+  }
+
+  async transferFunds({ paymentId, linkedAccountId, amount }) {
+    const transfer = await this.client.payments.transfer(paymentId, {
+      transfers: [
+        {
+          account: linkedAccountId,
+          amount: Math.round(amount * 100),
+          currency: 'INR',
+        },
+      ],
+    });
+
+    return { transferId: transfer.items?.[0]?.id, raw: transfer };
+  }
+
 }
 
 module.exports = RazorpayProvider;

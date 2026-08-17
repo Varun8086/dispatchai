@@ -105,4 +105,51 @@ async function verifyPayment(req, res, next) {
   }
 }
 
-module.exports = { initiatePayment, verifyPayment };
+async function refundPayment(req, res, next) {
+  try {
+    const { paymentId } = req.body;
+    const { role } = req.user;
+
+    if (!['dispatcher', 'admin'].includes(role)) {
+      return res.status(403).json({ error: 'Only dispatchers/admins can issue refunds' });
+    }
+
+    const paymentResult = await pool.query('SELECT * FROM payments WHERE id = $1', [paymentId]);
+    if (paymentResult.rows.length === 0) {
+      return res.status(404).json({ error: 'Payment not found' });
+    }
+
+    const payment = paymentResult.rows[0];
+
+    if (payment.status !== 'succeeded') {
+      return res.status(400).json({ error: `Cannot refund a payment with status '${payment.status}'` });
+    }
+
+    const paymentProvider = getPaymentProvider(payment.provider);
+    const refundResult = await paymentProvider.refundPayment({
+      providerPaymentId: payment.provider_payment_id,
+      amount: parseFloat(payment.amount),
+      currency: payment.currency,
+    });
+
+    const updated = await pool.query(
+      `UPDATE payments SET status = 'refunded', updated_at = NOW() WHERE id = $1 RETURNING *`,
+      [paymentId]
+    );
+
+    await publishEvent('payment.events', {
+      type: 'payment.refunded',
+      paymentId: payment.id,
+      orderId: payment.order_id,
+      provider: payment.provider,
+      timestamp: new Date().toISOString(),
+    });
+
+    res.json({ payment: updated.rows[0], refund: refundResult });
+  } catch (err) {
+    next(err);
+  }
+}
+
+
+module.exports = { initiatePayment, verifyPayment, refundPayment };

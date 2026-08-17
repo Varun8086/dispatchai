@@ -1,4 +1,5 @@
 const pool = require('../db/pool');
+const RazorpayProvider = require('../payments/providers/RazorpayProvider');
 
 async function registerAgent(req, res, next) {
   try {
@@ -106,4 +107,40 @@ async function listNearbyAgents(req, res, next) {
   }
 }
 
-module.exports = { registerAgent, updateLocation, toggleAvailability, listNearbyAgents };
+async function createPayoutAccount(req, res, next) {
+  try {
+    const userId = req.user.userId;
+
+    const agentResult = await pool.query('SELECT id FROM agents WHERE user_id = $1', [userId]);
+    if (agentResult.rows.length === 0) {
+      return res.status(404).json({ error: 'Agent profile not found' });
+    }
+
+    const userResult = await pool.query('SELECT name, email FROM users WHERE id = $1', [userId]);
+    const { name, email } = userResult.rows[0];
+
+    const razorpay = new RazorpayProvider();
+    let linkedAccount;
+    try {
+      linkedAccount = await razorpay.createLinkedAccount({
+        name,
+        email,
+        phone: '9999999999',
+      });
+    } catch (razorpayErr) {
+      console.error('RAZORPAY ERROR:', JSON.stringify(razorpayErr, null, 2));
+      throw razorpayErr;
+    }
+
+    await pool.query(
+      `UPDATE agents SET razorpay_linked_account_id = $1 WHERE user_id = $2`,
+      [linkedAccount.linkedAccountId, userId]
+    );
+
+    res.status(201).json({ linkedAccountId: linkedAccount.linkedAccountId });
+  } catch (err) {
+    next(err);
+  }
+}
+
+module.exports = { registerAgent, updateLocation, toggleAvailability, listNearbyAgents, createPayoutAccount };
