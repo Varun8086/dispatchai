@@ -1,5 +1,6 @@
 const pool = require('../db/pool');
 const { publishEvent } = require('../kafka/producer');
+const { predictETA } = require('../services/mlService');
 
 async function createOrder(req, res, next) {
   try {
@@ -10,9 +11,8 @@ async function createOrder(req, res, next) {
       return res.status(400).json({ error: 'pickup_address_id and dropoff_address_id are required' });
     }
 
-    // ownership check: make sure both addresses actually belong to this customer
     const addressCheck = await pool.query(
-      `SELECT id FROM addresses WHERE id = ANY($1::int[]) AND user_id = $2`,
+      `SELECT id, ST_AsText(location) as location FROM addresses WHERE id = ANY($1::int[]) AND user_id = $2`,
       [[pickup_address_id, dropoff_address_id], customerId]
     );
 
@@ -20,11 +20,36 @@ async function createOrder(req, res, next) {
       return res.status(403).json({ error: 'One or both addresses do not belong to you' });
     }
 
+    // calculate real distance between pickup and dropoff using PostGIS
+    const distanceResult = await pool.query(
+      `SELECT ST_Distance(a1.location, a2.location) / 1000.0 AS distance_km
+       FROM addresses a1, addresses a2
+       WHERE a1.id = $1 AND a2.id = $2`,
+      [pickup_address_id, dropoff_address_id]
+    );
+    const distanceKm = parseFloat(distanceResult.rows[0].distance_km);
+
+    const MAX_SERVICE_DISTANCE_KM = 50; // reasonable max for an intra-city delivery service
+
+    if (distanceKm > MAX_SERVICE_DISTANCE_KM) {
+      return res.status(400).json({
+        error: `Delivery distance (${distanceKm.toFixed(1)}km) exceeds our service area (max ${MAX_SERVICE_DISTANCE_KM}km)`,
+      });
+    }
+
+    const now = new Date();
+    const etaMinutes = await predictETA({
+      distanceKm,
+      hourOfDay: now.getHours(),
+      dayOfWeek: now.getDay(),
+      vehicleType: 'bike', // default for now — we don't know the agent's vehicle until assigned
+    });
+
     const result = await pool.query(
-      `INSERT INTO orders (customer_id, pickup_address_id, dropoff_address_id, fare_amount, status)
-       VALUES ($1, $2, $3, $4, 'pending')
-       RETURNING id, customer_id, pickup_address_id, dropoff_address_id, status, fare_amount, created_at`,
-      [customerId, pickup_address_id, dropoff_address_id, fare_amount || null]
+      `INSERT INTO orders (customer_id, pickup_address_id, dropoff_address_id, fare_amount, status, eta_minutes)
+       VALUES ($1, $2, $3, $4, 'pending', $5)
+       RETURNING id, customer_id, pickup_address_id, dropoff_address_id, status, fare_amount, eta_minutes, created_at`,
+      [customerId, pickup_address_id, dropoff_address_id, fare_amount || null, etaMinutes]
     );
 
     await publishEvent('order.events', {
