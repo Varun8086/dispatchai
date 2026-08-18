@@ -2,6 +2,7 @@ from fastapi import FastAPI
 from pydantic import BaseModel
 import pickle
 import pandas as pd
+from datetime import datetime, timedelta
 
 app = FastAPI(title="DispatchAI ML Service")
 
@@ -48,4 +49,57 @@ def predict_eta(request: ETARequest):
         "eta_minutes": round(float(prediction), 1),
         "distance_km": request.distance_km,
         "vehicle_type": request.vehicle_type,
+    }
+
+
+
+# --- Load the demand model alongside the ETA model ---
+with open('models/demand_model.pkl', 'rb') as f:
+    demand_model = pickle.load(f)
+
+
+class DemandForecastRequest(BaseModel):
+    hours_ahead: int = 24  # how many hours into the future to forecast
+
+
+@app.post("/forecast-demand")
+def forecast_demand(request: DemandForecastRequest):
+    future = demand_model.make_future_dataframe(periods=request.hours_ahead, freq='h')
+    forecast = demand_model.predict(future)
+
+    # only return the newly forecasted (future) rows, not the historical fit
+    future_forecast = forecast.tail(request.hours_ahead)[['ds', 'yhat', 'yhat_lower', 'yhat_upper']]
+
+    results = []
+    for _, row in future_forecast.iterrows():
+        results.append({
+            "timestamp": row['ds'].isoformat(),
+            "predicted_orders": max(0, round(row['yhat'], 1)),
+            "lower_bound": max(0, round(row['yhat_lower'], 1)),
+            "upper_bound": round(row['yhat_upper'], 1),
+        })
+
+    return {"forecast": results}
+
+
+@app.get("/surge-multiplier")
+def get_surge_multiplier():
+    # forecast just the next hour
+    future = demand_model.make_future_dataframe(periods=1, freq='h')
+    forecast = demand_model.predict(future)
+    predicted_next_hour = max(0, forecast.iloc[-1]['yhat'])
+
+    # simple, transparent surge logic based on predicted demand thresholds
+    if predicted_next_hour >= 50:
+        multiplier = 1.8
+    elif predicted_next_hour >= 35:
+        multiplier = 1.4
+    elif predicted_next_hour >= 20:
+        multiplier = 1.1
+    else:
+        multiplier = 1.0
+
+    return {
+        "predicted_orders_next_hour": round(predicted_next_hour, 1),
+        "surge_multiplier": multiplier,
     }
