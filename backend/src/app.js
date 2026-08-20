@@ -31,6 +31,9 @@ app.use('/messages', messagesRoutes);
 const paymentsRoutes = require('./routes/payments.routes');
 app.use('/payments', paymentsRoutes);
 
+const assistantRoutes = require('./routes/assistant.routes');
+app.use('/assistant', assistantRoutes);
+
 app.get('/health', (req, res) => {
   res.json({ status: 'ok', timestamp: new Date().toISOString() });
 });
